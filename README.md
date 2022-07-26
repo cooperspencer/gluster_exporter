@@ -25,6 +25,7 @@ go get github.com/ofesseler/gluster_exporter
 | --log.format              | `logger:stderr`     | Set the log target and format. Example: "logger:syslog?appname=bob&local=7" or "logger:stdout?json=true"
 | --log.level               | `info`              | Only log messages with the given severity or above. Valid levels: [debug, info, warn, error, fatal]
 | --version                 | -                   | Prints version information
+| --debug                   | false               | Enables debug output
 
 ## Make
 ```
