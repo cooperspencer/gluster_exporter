@@ -23,8 +23,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prometheus/common/log"
 	"github.com/prometheus/common/version"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"gopkg.in/alecthomas/kingpin.v2"
 )
 
@@ -220,7 +221,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	volumeInfo, err := ExecVolumeInfo()
 	// Couldn't parse xml, so something is really wrong and up=0
 	if err != nil {
-		log.Errorf("couldn't parse xml volume info: %v", err)
+		log.Error().Msgf("couldn't parse xml volume info: %v", err)
 		ch <- prometheus.MustNewConstMetric(
 			up, prometheus.GaugeValue, 0.0,
 		)
@@ -257,7 +258,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	// reads gluster peer status
 	peerStatus, peerStatusErr := ExecPeerStatus()
 	if peerStatusErr != nil {
-		log.Errorf("couldn't parse xml of peer status: %v", peerStatusErr)
+		log.Error().Msgf("couldn't parse xml of peer status: %v", peerStatusErr)
 	}
 	count := 0
 	for range peerStatus.Peer {
@@ -273,7 +274,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			if e.volumes[0] == allVolumes || ContainsVolume(e.volumes, volume.Name) {
 				volumeProfile, execVolProfileErr := ExecVolumeProfileGvInfoCumulative(volume.Name)
 				if execVolProfileErr != nil {
-					log.Errorf("Error while executing or marshalling gluster profile output: %v", execVolProfileErr)
+					log.Error().Msgf("Error while executing or marshalling gluster profile output: %v", execVolProfileErr)
 				}
 				for _, brick := range volumeProfile.Brick {
 					if strings.HasPrefix(brick.BrickName, e.hostname) {
@@ -314,7 +315,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	// executes gluster status all detail
 	volumeStatusAll, err := ExecVolumeStatusAllDetail()
 	if err != nil {
-		log.Errorf("couldn't parse xml of peer status: %v", err)
+		log.Error().Msgf("couldn't parse xml of peer status: %v", err)
 	}
 	for _, vol := range volumeStatusAll.VolStatus.Volumes.Volume {
 		for _, node := range vol.Node {
@@ -336,10 +337,10 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	}
 	vols := e.volumes
 	if vols[0] == allVolumes {
-		log.Warn("no Volumes were given.")
+		log.Debug().Msg("no Volumes were given.")
 		volumeList, volumeListErr := ExecVolumeList()
 		if volumeListErr != nil {
-			log.Error(volumeListErr)
+			log.Error().Err(volumeListErr)
 		}
 		vols = volumeList.Volume
 	}
@@ -355,11 +356,11 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 	mountBuffer, execMountCheckErr := execMountCheck()
 	if execMountCheckErr != nil {
-		log.Error(execMountCheckErr)
+		log.Error().Err(execMountCheckErr)
 	} else {
 		mounts, err := parseMountOutput(mountBuffer.String())
 		if err != nil {
-			log.Error(err)
+			log.Error().Err(err)
 			if len(mounts) > 0 {
 				for _, mount := range mounts {
 					ch <- prometheus.MustNewConstMetric(
@@ -375,7 +376,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 				isWriteable, err := execTouchOnVolumes(mount.mountPoint)
 				if err != nil {
-					log.Error(err)
+					log.Error().Err(err)
 				}
 				if isWriteable {
 					ch <- prometheus.MustNewConstMetric(
@@ -394,7 +395,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 			if e.volumes[0] == allVolumes || ContainsVolume(e.volumes, volume.Name) {
 				volumeQuotaXML, err := ExecVolumeQuotaList(volume.Name)
 				if err != nil {
-					log.Error("Cannot create quota metrics if quotas are not enabled in your gluster server")
+					log.Error().Msg("Cannot create quota metrics if quotas are not enabled in your gluster server")
 				} else {
 					for _, limit := range volumeQuotaXML.VolQuota.QuotaLimits {
 						ch <- prometheus.MustNewConstMetric(
@@ -490,11 +491,11 @@ func ContainsVolume(slice []string, element string) bool {
 // NewExporter initialises exporter
 func NewExporter(hostname, glusterExecPath, volumesString string, profile bool, quota bool) (*Exporter, error) {
 	if len(glusterExecPath) < 1 {
-		log.Fatalf("Gluster executable path is wrong: %v", glusterExecPath)
+		log.Fatal().Msgf("Gluster executable path is wrong: %v", glusterExecPath)
 	}
 	volumes := strings.Split(volumesString, ",")
 	if len(volumes) < 1 {
-		log.Warnf("No volumes given. Proceeding without volume information. Volumes: %v", volumesString)
+		log.Warn().Msgf("No volumes given. Proceeding without volume information. Volumes: %v", volumesString)
 	}
 
 	return &Exporter{
@@ -520,24 +521,36 @@ func main() {
 		glusterVolumes = kingpin.Flag("gluster.volumes", fmt.Sprintf("Comma separated volume names: vol1,vol2,vol3. Default is '%v' to scrape all metrics", allVolumes)).Default(allVolumes).String()
 		profile        = kingpin.Flag("profile", "Enable gluster profiling reports.").Bool()
 		quota          = kingpin.Flag("quota", "Enable gluster quota reports.").Bool()
+		debug          = kingpin.Flag("debug", "enable debug messages").Bool()
 		num            int
 	)
 
-	log.AddFlags(kingpin.CommandLine)
+	timeformat := "2006-01-02T15:04:05Z07:00"
+	log.Logger = log.Output(zerolog.ConsoleWriter{
+		Out:        os.Stderr,
+		TimeFormat: timeformat,
+	})
+
 	kingpin.Version(version.Print("gluster_exporter"))
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
 
-	log.Infoln("Starting gluster_exporter", version.Info())
-	log.Infoln("Build context", version.BuildContext())
+	if *debug {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	} else {
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
+
+	log.Info().Msgf("Starting gluster_exporter %s", version.Info())
+	log.Info().Msgf("Build context %s", version.BuildContext())
 
 	hostname, err := os.Hostname()
 	if err != nil {
-		log.Fatalf("While trying to get Hostname error happened: %v", err)
+		log.Fatal().Msgf("While trying to get Hostname error happened: %v", err)
 	}
 	exporter, err := NewExporter(hostname, *glusterPath, *glusterVolumes, *profile, *quota)
 	if err != nil {
-		log.Errorf("Creating new Exporter went wrong, ... \n%v", err)
+		log.Error().Msgf("Creating new Exporter went wrong, ... \n%v", err)
 	}
 	prometheus.MustRegister(exporter)
 
@@ -551,13 +564,13 @@ func main() {
 			</body>
 			</html>`))
 		if err != nil {
-			log.Fatal(num, err)
+			log.Fatal().Msgf("%d %v", num, err)
 		}
 	})
 
-	log.Infoln("Listening on", *listenAddress)
+	log.Info().Msgf("Listening on %s", *listenAddress)
 	err = http.ListenAndServe(*listenAddress, nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal().Err(err)
 	}
 }
